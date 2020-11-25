@@ -1,5 +1,5 @@
 ﻿// *************************************************************
-// Copyright (c) 1991-2019 LEAD Technologies, Inc.              
+// Copyright (c) 1991-2020 LEAD Technologies, Inc.              
 // All Rights Reserved.                                         
 // *************************************************************
 using System;
@@ -122,7 +122,11 @@ namespace OcrDemo
 
          try
          {
+#if LEADTOOLS_V21_OR_LATER
+            _ocrEngine = OcrEngineManager.CreateEngine(OcrEngineType.LEAD);
+#else
             _ocrEngine = OcrEngineManager.CreateEngine(OcrEngineType.LEAD, false);
+#endif // #if LEADTOOLS_V21_OR_LATER
 
 #if LT_CLICKONCE
             _ocrEngine.Startup( _rasterCodecs, null, null, Application.StartupPath + @"\OCR Engine" );
@@ -154,7 +158,9 @@ namespace OcrDemo
 #endif
 
          if (File.Exists(defaultDocumentFile))
+         {
             OpenDocument(defaultDocumentFile, null, 1, 1);
+         }
       }
 
       protected override void OnFormClosed(FormClosedEventArgs e)
@@ -369,11 +375,109 @@ namespace OcrDemo
          _viewerControl.FitPage(false);
       }
 
+      private static Dictionary<string, string> GetValues(IOcrSettingManager manager)
+      {
+         string[] settingsToCheck = new string[]
+         {
+            "Recognition.RecognitionModuleType",
+            "Recognition.Preprocess.BlackWhiteImageConversionMethod",
+            "Recognition.Preprocess.BlackWhiteImageConversionThreshold",
+            "Recognition.Preprocess.BlackWhiteSauvolaKFactor",
+            "Recognition.Preprocess.BlackWhiteSauvolaWindowSize",
+            "Recognition.Preprocess.BlackWhiteSauvolaRFactor",
+            "Recognition.Preprocess.MobileImagePreprocess"
+         };
+
+         Dictionary<string, string> values = new Dictionary<string, string>();
+         foreach(var name in settingsToCheck)
+         {
+            if(manager.IsSettingNameSupported(name))
+               values.Add(name, manager.GetValue(name));
+         }
+
+         return values;
+      }
+
+      private void DoResetImages(OcrProgressDialog dlg, Dictionary<string, object> args)
+      {
+         try
+         {
+            if (_ocrDocument != null)
+            {
+               int index = 0;
+               foreach (IOcrPage ocrPage in _ocrDocument.Pages)
+               {
+                  if (dlg.IsCanceled)
+                     break;
+
+                  // Remove the zones from the page and unrecognize
+                  ocrPage.Zones.Clear();
+                  ocrPage.Unrecognize();
+
+                  RasterImage image = ocrPage.GetRasterImage(OcrPageType.Current);
+                  ocrPage.SetRasterImage(image);
+
+                  if (index == CurrentPageIndex)
+                  {
+                     _viewerControl.SetImageAndPage(image, ocrPage);
+                  }
+
+                  string message = string.Format("Loading Pages: {0}%", index++ * 100.0 / _ocrDocument.Pages.Count);
+                  dlg.UpdateDescription(message);
+               }
+            }
+            else if (_ocrPage != null)
+            {
+               // Remove the zones from the page and unrecognize
+               _ocrPage.Zones.Clear();
+               _ocrPage.Unrecognize();
+
+               RasterImage image = _viewerControl.RasterImage;
+               _ocrPage.SetRasterImage(image);
+               _viewerControl.SetImageAndPage(image, _ocrPage);
+            }
+         }
+         catch (Exception ex)
+         {
+            ShowError(ex);
+         }
+         finally
+         {
+            // Update the page in the viewer from the engine
+            GotoPage(CurrentPageIndex);
+            // Update the thumbnail(s)
+            RefreshPagesControl(false);
+         }
+      }
+
       private void _engineSettingsToolStripMenuItem_Click(object sender, EventArgs e)
       {
          // Show the dialog to let the user change any of the engine settings
+         bool resetImage = false;
+         Dictionary<string, string> currentValues = GetValues(_ocrEngine.SettingManager);
          using (EngineSettingsDialog dlg = new EngineSettingsDialog(_ocrEngine))
+         {
             dlg.ShowDialog(this);
+
+            Dictionary<string, string> newValues = GetValues(_ocrEngine.SettingManager);
+            foreach (var pair in currentValues)
+            {
+               if (newValues[pair.Key].CompareTo(pair.Value) != 0)
+               {
+                  resetImage = true;
+                  break;
+               }
+            }
+         }
+
+         if (resetImage)
+         {
+            bool allowProgress = _preferencesUseProgressBarsToolStripMenuItem.Checked;
+            using (OcrProgressDialog dlg = new OcrProgressDialog(allowProgress, "Loading Pages", new OcrProgressDialog.ProcessDelegate(DoResetImages), null))
+            {
+               dlg.ShowDialog(this);
+            }
+         }
       }
 
       private void _engineComponentsToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1158,6 +1262,34 @@ namespace OcrDemo
          _documentToolStripMenuItem_DropDownOpening(null, null);
       }
 
+      private void OpenDocumentZones()
+      {
+         var fileName = !string.IsNullOrEmpty(_fileName) ? Path.ChangeExtension(_fileName, "ozf"):null;
+         if (File.Exists(fileName))
+         {
+            try
+            {
+               if (null != _ocrPage)
+               {
+                  _ocrPage.LoadZones(fileName);
+               }
+               else if(null != _ocrDocument)
+               { 
+                  _ocrDocument.LoadZones(fileName);
+               }
+
+               CheckOmrOptions();
+            }
+            catch
+            {
+            }
+            finally
+            {
+               _viewerControl.ZonesUpdated();
+               UpdateUIState();
+            }
+         }
+      }
       private void OpenDocument()
       {
          // Open a document from disk
@@ -1384,6 +1516,10 @@ namespace OcrDemo
                {
                   DoCloseOcrDocument(false);
                   ShowError(exception);
+               }
+               if (exception == null)
+               {
+                  OpenDocumentZones();
                }
             };
 
@@ -2010,7 +2146,7 @@ namespace OcrDemo
       {
          // Run the command on all or just current page
          bool allPages = _processAllPagesToolStripMenuItem.Checked;
-
+         FlipCommand flipCmd = new FlipCommand(horizontal);
          try
          {
             using (WaitCursor wait = new WaitCursor())
@@ -2028,7 +2164,7 @@ namespace OcrDemo
                      ocrPage.Unrecognize();
 
                      RasterImage image = ocrPage.GetRasterImage(OcrPageType.Current);
-                     image.FlipViewPerspective(horizontal);
+                     flipCmd.Run(image);
                      ocrPage.SetRasterImage(image);
                      _viewerControl.SetImageAndPage(image, ocrPage);
                   }
@@ -2041,7 +2177,7 @@ namespace OcrDemo
 
                   // The image is in the viewer, use it
                   RasterImage image = _viewerControl.RasterImage;
-                  image.FlipViewPerspective(horizontal);
+                  flipCmd.Run(image);
                   _ocrPage.SetRasterImage(image);
                   _viewerControl.SetImageAndPage(image, _ocrPage);
                }
@@ -2300,34 +2436,38 @@ namespace OcrDemo
 
       private void RecognizeDocument(bool allPages)
       {
-         // Recognize current or all pages in the document
-
-         // Setup the arguments for the callback
-         Dictionary<string, object> args = new Dictionary<string, object>();
-         args.Add("allPages", allPages);
-
-         // Call the process dialog
-         try
+         // offer to save the recognized page/document after recognize
+         if (_saveAfterRecognize)
          {
-            bool allowProgress = _preferencesUseProgressBarsToolStripMenuItem.Checked;
-            using (OcrProgressDialog dlg = new OcrProgressDialog(allowProgress, "Recognize", new OcrProgressDialog.ProcessDelegate(DoRecognize), args))
+            SaveDocument();
+         }
+         else
+         {
+            // Recognize current or all pages in the document
+
+            // Setup the arguments for the callback
+            Dictionary<string, object> args = new Dictionary<string, object>();
+            args.Add("allPages", allPages);
+
+            // Call the process dialog
+            try
             {
-               dlg.ShowDialog(this);
+               bool allowProgress = _preferencesUseProgressBarsToolStripMenuItem.Checked;
+               using (OcrProgressDialog dlg = new OcrProgressDialog(allowProgress, "Recognize", new OcrProgressDialog.ProcessDelegate(DoRecognize), args))
+               {
+                  dlg.ShowDialog(this);
+               }
             }
-         }
-         catch (Exception ex)
-         {
-            ShowError(ex);
-         }
-         finally
-         {
-            // Re-paint current page to show new zones
-            _viewerControl.ZonesUpdated();
-            UpdateUIState();
-
-            // offer to save the recognized page/document after recognize
-            if (_saveAfterRecognize)
-               SaveDocument();
+            catch (Exception ex)
+            {
+               ShowError(ex);
+            }
+            finally
+            {
+               // Re-paint current page to show new zones
+               _viewerControl.ZonesUpdated();
+               UpdateUIState();
+            }
          }
       }
 
@@ -2374,47 +2514,7 @@ namespace OcrDemo
 
       private void SaveDocument()
       {
-         // If we have an empty document, nothing gets saved unless the document has some pages. Check...
-         if (_ocrDocument != null)
-         {
-            int pageCount = GetOcrDocumentPagesCount();
-            if (pageCount == 0)
-            {
-               MessageBox.Show("This document has no pages. Add at least one page and try again", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-               return;
-            }
-
-            // check if we have memory mode document then check if non of its pages were recognized then recognize all pages first
-            if (IsOcrDocumentInMemory())
-            {
-               bool documentHasNoRecognizedPages = true;
-               for (int i = 0; i < pageCount; i++)
-               {
-                  IOcrPage ocrPage = null;
-                  ocrPage = _ocrDocument.Pages[i];
-                  if (ocrPage != null)
-                  {
-                     if (ocrPage.IsRecognized)
-                     {
-                        documentHasNoRecognizedPages = false;
-                        break;
-                     }
-                  }
-               }
-
-               if (documentHasNoRecognizedPages)
-               {
-                  _recognizeRecognizeDocumentToolStripMenuItem.PerformClick();
-               }
-            }
-         }
-
-         // Get the last format, options and document file name selected by the user
-         DocumentWriter docWriter = _ocrEngine.DocumentWriterInstance;
-
          Properties.Settings settings = new Properties.Settings();
-         settings.DocumentFileName = _fileName;
-
          DocumentFormat initialFormat = DocumentFormat.Pdf;
 
          if (!string.IsNullOrEmpty(settings.Format))
@@ -2425,6 +2525,16 @@ namespace OcrDemo
             }
             catch { }
          }
+
+         if (!string.IsNullOrEmpty(settings.EngineFormatName))
+         {
+            if (_ocrEngine.DocumentManager.IsEngineFormatSupported(settings.EngineFormatName))
+               _ocrEngine.DocumentManager.EngineFormat = settings.EngineFormatName;
+         }
+
+         // Get the last format, options and document file name selected by the user
+         DocumentWriter docWriter = _ocrEngine.DocumentWriterInstance;
+         settings.DocumentFileName = _fileName;
 
          if (!string.IsNullOrEmpty(settings.FormatOptionsXml))
          {
@@ -2438,43 +2548,72 @@ namespace OcrDemo
             catch { }
          }
 
-         if (!string.IsNullOrEmpty(settings.EngineFormatName))
-         {
-            if (_ocrEngine.DocumentManager.IsEngineFormatSupported(settings.EngineFormatName))
-               _ocrEngine.DocumentManager.EngineFormat = settings.EngineFormatName;
-         }
-
-         IOcrDocument tempOcrDocument = null;
-         if (_ocrDocument == null)
-         {
-            // User wish to save page while he/she doesn't have OCR Document yet, so we are going to create a temp document, 
-            // add the page, save then destroy the document.
-            tempOcrDocument = _ocrEngine.DocumentManager.CreateDocument(null, OcrCreateDocumentOptions.AutoDeleteFile);
-            if (tempOcrDocument != null)
-            {
-               // Check if the page is recognized, otherwise, recognize
-               if (!_ocrPage.IsRecognized)
-               {
-                  // Recognize it first
-                  Dictionary<string, object> args = new Dictionary<string, object>();
-                  args.Add("allPages", false);
-                  bool allowProgress = _preferencesUseProgressBarsToolStripMenuItem.Checked;
-                  using (OcrProgressDialog dlg = new OcrProgressDialog(allowProgress, "Recognize", new OcrProgressDialog.ProcessDelegate(DoRecognize), args))
-                  {
-                     if (dlg.ShowDialog(this) == DialogResult.Cancel)
-                        return;
-                  }
-               }
-            }
-         }
-         else
-            tempOcrDocument = _ocrDocument;
-
          // Show the save dialog
-         using (SaveDocumentDialog dlg = new SaveDocumentDialog(tempOcrDocument, initialFormat, settings.DocumentFileName, _viewDocument, _customFileName))
+         using (SaveDocumentDialog dlg = new SaveDocumentDialog(_ocrEngine, _ocrDocument != null && _ocrDocument.Pages != null && _ocrDocument.Pages.Count >= 1 ? _ocrDocument.Pages.Count : 1, initialFormat, settings.DocumentFileName, _viewDocument, _customFileName))
          {
             if (dlg.ShowDialog(this) == DialogResult.OK)
             {
+               // If we have an empty document, nothing gets saved unless the document has some pages. Check...
+               if (_ocrDocument != null)
+               {
+                  int pageCount = GetOcrDocumentPagesCount();
+                  if (pageCount == 0)
+                  {
+                     MessageBox.Show("This document has no pages. Add at least one page and try again", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                     return;
+                  }
+
+                  // check if we have memory mode document then check if non of its pages were recognized then recognize all pages first
+                  if (IsOcrDocumentInMemory())
+                  {
+                     bool documentHasNoRecognizedPages = true;
+                     for (int i = 0; i < pageCount; i++)
+                     {
+                        IOcrPage ocrPage = null;
+                        ocrPage = _ocrDocument.Pages[i];
+                        if (ocrPage != null)
+                        {
+                           if (ocrPage.IsRecognized)
+                           {
+                              documentHasNoRecognizedPages = false;
+                              break;
+                           }
+                        }
+                     }
+
+                     if (documentHasNoRecognizedPages)
+                     {
+                        _recognizeRecognizeDocumentToolStripMenuItem.PerformClick();
+                     }
+                  }
+               }
+
+               IOcrDocument tempOcrDocument = null;
+               if (_ocrDocument == null)
+               {
+                  // User wish to save page while he/she doesn't have OCR Document yet, so we are going to create a temp document, 
+                  // add the page, save then destroy the document.
+                  tempOcrDocument = _ocrEngine.DocumentManager.CreateDocument(null, OcrCreateDocumentOptions.AutoDeleteFile);
+                  if (tempOcrDocument != null)
+                  {
+                     // Check if the page is recognized, otherwise, recognize
+                     if (!_ocrPage.IsRecognized)
+                     {
+                        // Recognize it first
+                        Dictionary<string, object> args = new Dictionary<string, object>();
+                        args.Add("allPages", false);
+                        bool allowProgress = _preferencesUseProgressBarsToolStripMenuItem.Checked;
+                        using (OcrProgressDialog progressDlg = new OcrProgressDialog(allowProgress, "Recognize", new OcrProgressDialog.ProcessDelegate(DoRecognize), args))
+                        {
+                           if (progressDlg.ShowDialog(this) == DialogResult.Cancel)
+                              return;
+                        }
+                     }
+                  }
+               }
+               else
+                  tempOcrDocument = _ocrDocument;
+
                if (_ocrDocument == null)
                   tempOcrDocument.Pages.Add(_ocrPage);
 
@@ -2508,11 +2647,12 @@ namespace OcrDemo
 
                // Save the document
                SaveDocument(tempOcrDocument, dlg.SelectedFileName, dlg.SelectedFormat);
+
+
+               if (tempOcrDocument != null && _ocrDocument == null)
+                  tempOcrDocument.Dispose();
             }
          }
-
-         if (tempOcrDocument != null && _ocrDocument == null)
-            tempOcrDocument.Dispose();
       }
 
       private void SaveDocument(IOcrDocument ocrDocument, string documentFileName, DocumentFormat format)

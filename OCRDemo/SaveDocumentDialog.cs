@@ -1,5 +1,5 @@
 ﻿// *************************************************************
-// Copyright (c) 1991-2019 LEAD Technologies, Inc.              
+// Copyright (c) 1991-2020 LEAD Technologies, Inc.              
 // All Rights Reserved.                                         
 // *************************************************************
 using System;
@@ -19,7 +19,8 @@ namespace OcrDemo
 {
    public partial class SaveDocumentDialog : Form
    {
-      private IOcrDocument _ocrDocument;
+      private IOcrEngine _engine;
+      private int _totalPages;
       private DocumentFormat _selectedFormat;
       private string _selectedFileName;
       private string _srcFileName;
@@ -61,13 +62,14 @@ namespace OcrDemo
          }
       }
 
-      public SaveDocumentDialog(IOcrDocument ocrDocument, DocumentFormat initialFormat, string initialFileName, bool viewDocument, bool customFileName)
+      public SaveDocumentDialog(IOcrEngine engine, int totalPages, DocumentFormat initialFormat, string initialFileName, bool viewDocument, bool customFileName)
       {
          InitializeComponent();
          _srcFileName = initialFileName;
          _customFileName = customFileName;
 
-         _ocrDocument = ocrDocument;
+         _engine = engine;
+         _totalPages = totalPages;
 
          // Get the formats
          // This is the order of importance, show these first then the rest as they come along
@@ -102,8 +104,8 @@ namespace OcrDemo
 
          MyFormat pdfFormat = null;
 
-         DocumentWriter docWriter = _ocrDocument.Engine.DocumentWriterInstance;
-         IOcrDocumentManager ocrDocumentManager = _ocrDocument.Engine.DocumentManager;
+         DocumentWriter docWriter = engine.DocumentWriterInstance;
+         IOcrDocumentManager ocrDocumentManager = engine.DocumentManager;
          string[] engineSupportedFormatNames = ocrDocumentManager.GetSupportedEngineFormats();
 
          foreach (DocumentFormat format in formatsToAdd)
@@ -340,7 +342,7 @@ namespace OcrDemo
          if(format == DocumentFormat.User)
          {
             MyEngineFormat mef = _userFormatNameComboBox.SelectedItem as MyEngineFormat;
-            IOcrDocumentManager ocrDocumentManager = _ocrDocument.Engine.DocumentManager;
+            IOcrDocumentManager ocrDocumentManager = _engine.DocumentManager;
             extension = ocrDocumentManager.GetEngineFormatFileExtension(mef.Format);
          }
          else
@@ -379,11 +381,11 @@ namespace OcrDemo
          if(!string.IsNullOrEmpty(fileName))
          {
             string extension = GetFileExtension(mf.Format);
-
-            if (fileName.Equals(_srcFileName) && !_customFileName)
-               _fileNameTextBox.Text += "." + extension;
-            else
+            FileInfo info = new FileInfo(fileName);
+            if(!string.IsNullOrEmpty(info.Extension))
                _fileNameTextBox.Text = Path.ChangeExtension(fileName, extension);
+            else if(!_customFileName)
+               _fileNameTextBox.Text = fileName + "." + extension;
          }
 
          // Show only the options page corresponding to this format
@@ -530,7 +532,7 @@ namespace OcrDemo
 
          _pdfOptions.ImageOverText = _pdfImageOverTextCheckBox.Checked;
          _pdfOptions.Linearized = _pdfLinearizedCheckBox.Checked;
-         using (AdvancedPdfDocumentOptionsDialog dlg = new AdvancedPdfDocumentOptionsDialog(_pdfOptions, (_ocrDocument != null && _ocrDocument.Pages != null) ? ((_ocrDocument.Pages.Count > 0) ? _ocrDocument.Pages.Count : 1) : 1, tabIndex))
+         using (AdvancedPdfDocumentOptionsDialog dlg = new AdvancedPdfDocumentOptionsDialog(_pdfOptions, _totalPages, tabIndex))
          {
             dlg.ShowLinearized = false;
             if (dlg.ShowDialog(this) == DialogResult.OK)
@@ -550,8 +552,8 @@ namespace OcrDemo
 
       private void _okButton_Click(object sender, EventArgs e)
       {
-         DocumentWriter docWriter = _ocrDocument.Engine.DocumentWriterInstance;
-         IOcrDocumentManager ocrDocumentManager = _ocrDocument.Engine.DocumentManager;
+         DocumentWriter docWriter = _engine.DocumentWriterInstance;
+         IOcrDocumentManager ocrDocumentManager = _engine.DocumentManager;
 
          // Save the options
          MyFormat mf = _formatComboBox.SelectedItem as MyFormat;
